@@ -1,4 +1,3 @@
-#![feature(const_mut_refs)]
 pub use cpm8080_core::cpm::CPM;
 pub use i8080_core::cpu::CPU;
 pub mod sys;

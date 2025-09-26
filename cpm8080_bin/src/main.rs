@@ -1,4 +1,3 @@
-#![feature(const_mut_refs)]
 use cpm8080_lib::*;
 use std::env;
 use std::fs;
