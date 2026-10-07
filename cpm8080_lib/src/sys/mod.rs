@@ -1,16 +1,17 @@
 use core::ops::{Index, IndexMut};
-use std::io::{Read, Write};
+use std::io::Write;
+use cpm8080_core::cpm::BDOS_BASE;
 use crate::{CPM, CPU};
 
-// BDOS entry point; the word at 0x0006 also tells programs where the TPA ends.
-const BDOS_BASE: u16 = 0xFD00;
 // BIOS jump table; the word at 0x0001 points at its WBOOT entry.
 const BIOS_BASE: u16 = 0xFE00;
 const BIOS_ENTRIES: u16 = 17;
 const BIOS_END: u16 = BIOS_BASE + BIOS_ENTRIES * 3;
+/// Initial stack pointer. The word at the top of the stack is 0x0000, so a
+/// program that exits with RET lands on the warm boot vector.
+pub const INITIAL_SP: u16 = 0xFFFE;
 
 pub struct Sys {
-    os: CPM,
     mem: [u8; 0x10000],
 }
 impl Sys {
@@ -41,10 +42,24 @@ impl Sys {
             mem_arr[entry as usize + 1] = entry as u8;
             mem_arr[entry as usize + 2] = (entry >> 8) as u8;
         }
+        mem_arr[INITIAL_SP as usize] = 0x00;
+        mem_arr[INITIAL_SP as usize + 1] = 0x00;
         mem_arr[0x100..0x100 + com_file_len].copy_from_slice(&com_file[0..com_file_len]);
         Sys {
-            os: CPM(0),
             mem: mem_arr,
+        }
+    }
+    /// Sets up the command tail at 0x0080 and parses the first two arguments
+    /// into the default FCBs at 0x005C and 0x006C, as the CCP would.
+    pub fn set_command_line(&mut self, args: &[String]) {
+        let tail: String = args.iter().map(|a| format!(" {}", a)).collect();
+        let tail = tail.to_ascii_uppercase();
+        let len = tail.len().min(126);
+        self.mem[0x0080] = len as u8;
+        self.mem[0x0081..0x0081 + len].copy_from_slice(&tail.as_bytes()[..len]);
+        self.mem[0x0081 + len] = 0;
+        for (arg, fcb) in args.iter().zip([0x005C, 0x006C]) {
+            parse_fcb(&mut self.mem[fcb..fcb + 12], arg);
         }
     }
     /// Runs one instruction, servicing BDOS/BIOS calls. Returns false once the
@@ -53,43 +68,28 @@ impl Sys {
         cpu.next(self);
         let pc = cpu.get_regs().pc;
         if pc == 0x0005 || pc == BDOS_BASE {
-            let c_reg = cpu.get_regs().c;
-            // P_TERMCPM is a warm boot
-            if c_reg == 0x00 {
-                return self.bios_call(cpu, 0x01);
-            }
-            os.0 = c_reg;
-            os.syscall(cpu, self);
+            return os.syscall(cpu, self);
         } else if (BIOS_BASE..BIOS_END).contains(&pc) && (pc - BIOS_BASE) % 3 == 0 {
-            return self.bios_call(cpu, ((pc - BIOS_BASE) / 3) as u8);
+            return self.bios_call(cpu, os, ((pc - BIOS_BASE) / 3) as u8);
         }
         true
     }
-    fn bios_call(&mut self, cpu: &mut CPU, func: u8) -> bool {
+    fn bios_call(&mut self, cpu: &mut CPU, os: &mut CPM, func: u8) -> bool {
         match func {
             // BOOT, WBOOT: the program is done
             0x00 | 0x01 => {
                 let _ = std::io::stdout().flush();
                 return false;
             }
-            // CONST: report no character pending
-            0x02 => cpu.regs.a = 0x00,
-            // CONIN: blocking read, CP/M expects CR as the line terminator
-            0x03 => {
-                let _ = std::io::stdout().flush();
-                let mut buf = [0u8; 1];
-                cpu.regs.a = match std::io::stdin().read(&mut buf) {
-                    Ok(1) if buf[0] == b'\n' => b'\r',
-                    Ok(1) => buf[0],
-                    _ => 0x1A,
-                };
-            }
+            // CONST
+            0x02 => cpu.regs.a = if os.console.status() { 0xFF } else { 0x00 },
+            // CONIN: end the session once input has run out
+            0x03 => match os.console.read() {
+                Some(c) => cpu.regs.a = c,
+                None => return false,
+            },
             // CONOUT
-            0x04 => {
-                let mut out = std::io::stdout();
-                let _ = out.write_all(&[cpu.regs.c]);
-                let _ = out.flush();
-            }
+            0x04 => os.console.write(cpu.regs.c),
             // LIST, PUNCH
             0x05 | 0x06 => {}
             // READER: always at end of file
@@ -114,6 +114,38 @@ impl Sys {
         }
         cpu.ret(self);
         true
+    }
+}
+
+/// Fills the drive, name and type of an FCB from a command line argument like
+/// `B:NAME.TXT`, turning `*` into `?` wildcards.
+fn parse_fcb(fcb: &mut [u8], arg: &str) {
+    let arg = arg.to_ascii_uppercase();
+    let arg = arg.as_bytes();
+    let (drive, rest) = match arg {
+        [d, b':', rest @ ..] if d.is_ascii_uppercase() && *d <= b'P' => (d - b'A' + 1, rest),
+        _ => (0, arg),
+    };
+    let (name, ext) = match rest.iter().position(|&c| c == b'.') {
+        Some(i) => (&rest[..i], &rest[i + 1..]),
+        None => (rest, &[][..]),
+    };
+    fcb[0] = drive;
+    fcb[1..12].fill(b' ');
+    fill_field(&mut fcb[1..9], name);
+    fill_field(&mut fcb[9..12], ext);
+}
+
+fn fill_field(field: &mut [u8], src: &[u8]) {
+    for i in 0..field.len() {
+        match src.get(i) {
+            Some(b'*') => {
+                field[i..].fill(b'?');
+                return;
+            }
+            Some(&c) => field[i] = c,
+            None => return,
+        }
     }
 }
 
