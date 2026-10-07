@@ -21,7 +21,7 @@ impl CPM {
                 );
                 panic!(
                     "Unimplemented CPM syscall: {:02x}",
-                    mem[cpu.get_regs().pc],
+                    self.0,
                 );
             }
         }
@@ -36,7 +36,7 @@ impl CPM {
         #[cfg(feature = "std")]
         print!("\n");
         while c != '$' {
-            c = mem[off + 3 + count] as char;
+            c = mem[off + count] as char;
             #[cfg(feature = "log")]
             debug!("{}", c);
             #[cfg(feature = "std")]

@@ -10,7 +10,5 @@ fn main() {
     let mut sys = Sys::new(&file);
     let mut os = CPM(0);
     let mut cpu = CPU::new(Some(0x0100), Some(0xFFFF));
-    loop {
-        sys.run_instruction(&mut cpu, &mut os);
-    }
+    while sys.run_instruction(&mut cpu, &mut os) {}
 }
