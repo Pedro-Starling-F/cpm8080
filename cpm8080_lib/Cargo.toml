@@ -16,7 +16,7 @@ wasm-bindgen-futures = { version = "*", optional = true}
 futures = { version = "*", optional = true}
 console_log = {version = "*", optional = true}
 cpm8080_core = {path = "../cpm8080_core"}
-i8080_core = {path = "../i8080_core"}
+i8080_core = {path = "../i8080_core", features = ["start_regs"]}
 
 [dependencies.web-sys]
 version = "*"
